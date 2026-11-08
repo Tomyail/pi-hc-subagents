@@ -1,0 +1,31 @@
+{
+  "name": "pi-hc-subagents",
+  "version": "0.1.0",
+  "description": "Pi subagents dispatched through herdr-core, so children appear under their parent in herdr-app's agents panel",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "author": "Tomyail",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tomyail/pi-hc-subagents"
+  },
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "~1.5.0",
+    "typebox": "~1.3.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "~1.5.0",
+    "typebox": "~1.3.0"
+  },
+  "scripts": {
+    "test": "PI_HC_SUBAGENTS_SKIP_RIVAL_CHECK=1 node test/smoke.ts"
+  }
+}
