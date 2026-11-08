@@ -40,7 +40,7 @@ export async function hcRun(
 	argv: string[],
 	options: { name: string; parent: string; cwd: string; labels?: Record<string, string> },
 ): Promise<HcTerminal> {
-	const args = ["run", "--bg", "--json", "--name", options.name, "--parent", options.parent, "--cwd", options.cwd];
+	const args = ["run", "--bg", "--json", "--no-notify", "--name", options.name, "--parent", options.parent, "--cwd", options.cwd];
 	for (const [key, value] of Object.entries(options.labels ?? {})) {
 		if (value) args.push("--label", `${key}=${value}`);
 	}

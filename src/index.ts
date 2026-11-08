@@ -193,16 +193,30 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 		if (!agent) {
 			throw new Error(`Unknown agent "${spec.agent}".\n\nAvailable:\n${describeAgents(agents)}`);
 		}
-		const name = sanitizeName(spec.name ?? `${spec.agent}-${counter + 1}`);
-		const sessionDir = join(homedir(), ".cache", "pi-hc-subagents", "sessions", name);
-		mkdirSync(sessionDir, { recursive: true });
-		const argv = childArgv(agent, { task: spec.task, model: spec.model, thinking: spec.thinking, sessionDir, parent });
-		const terminal = await hcRun(argv, {
-			name,
-			parent,
-			cwd: ctx.cwd,
-			labels: { "hc.subagent": "1", "hc.agent": spec.agent, "hc.title": spec.title ?? "" },
-		});
+		const base = sanitizeName(spec.name ?? `${spec.agent}-${counter + 1}`);
+		// Names are unique among live terminals, and a finished child stays live (pi
+		// keeps its prompt after a turn), so a repeat launch has to step around it.
+		let name = base;
+		let sessionDir = "";
+		let terminal: HcTerminal | undefined;
+		for (let attempt = 0; !terminal; attempt += 1) {
+			if (attempt > 20) throw new Error(`Could not find a free terminal name near "${base}".`);
+			name = attempt === 0 ? base : `${base.slice(0, 28)}-${attempt + 1}`;
+			sessionDir = join(homedir(), ".cache", "pi-hc-subagents", "sessions", name);
+			mkdirSync(sessionDir, { recursive: true });
+			const argv = childArgv(agent, { task: spec.task, model: spec.model, thinking: spec.thinking, sessionDir, parent });
+			try {
+				terminal = await hcRun(argv, {
+					name,
+					parent,
+					cwd: ctx.cwd,
+					labels: { "hc.subagent": "1", "hc.agent": spec.agent, "hc.title": spec.title ?? "" },
+				});
+			} catch (error) {
+				if (!String(error).includes("name_taken")) throw error;
+			}
+		}
+		if (!terminal) throw new Error(`Could not start a terminal for "${base}".`);
 		const child: Child = {
 			id: nextId(),
 			name,

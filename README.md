@@ -89,6 +89,12 @@ file once the terminal leaves `working`. It arrives as a separate message that
 starts a new turn — so the parent should not poll, and should keep working or
 stop.
 
+A child does not exit after reporting: `pi "<task>"` runs the turn and stays at
+its prompt, so it stays in the agents panel as a live `done` terminal and can be
+peeked at or sent a follow-up. That also means names are unique among live
+terminals — a repeat launch steps around a taken name (`scout-2`, `scout-3`).
+Reclaiming finished children is not automated yet; use `subagent_kill`.
+
 ### `subagent_kill`
 
 Stops a running child by name or terminal address. No report follows.
