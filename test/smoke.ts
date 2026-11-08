@@ -6,7 +6,16 @@
  * Launches a real child through hc, waits for its report, and prints what the
  * parent would have received. Requires `hc` and HC_TERMINAL_ID.
  */
+import { execFile } from "node:child_process";
 import piHcSubagents from "../src/index.ts";
+
+function hcCode(args: string[]): Promise<number> {
+	return new Promise((resolve) => {
+		execFile("hc", args, { timeout: 20_000 }, (error) => {
+			resolve(error ? 1 : 0);
+		});
+	});
+}
 
 type Registered = { name: string; execute: (id: string, params: any, signal: any, onUpdate: any, ctx: any) => Promise<any> };
 
@@ -48,3 +57,23 @@ if (!messages.length) {
 }
 console.log("\n=== report ===\n" + messages[0].content);
 console.log("\n=== options ===\n" + JSON.stringify(messages[0].options));
+
+// The default agent definition reclaims a reported child, so its terminal must
+// leave the agents panel.
+const address = /Terminal: (\S+)/.exec(messages[0].content)?.[1];
+if (!address) throw new Error("report did not name a terminal");
+
+let gone = false;
+const reapDeadline = Date.now() + 20_000;
+while (Date.now() < reapDeadline) {
+	if ((await hcCode(["get", address, "--json"])) !== 0) {
+		gone = true;
+		break;
+	}
+	await new Promise((resolve) => setTimeout(resolve, 500));
+}
+if (!gone) {
+	console.error(`FAIL: ${address} is still present after reporting`);
+	process.exit(1);
+}
+console.log(`\nreclaimed: ${address} is gone`);

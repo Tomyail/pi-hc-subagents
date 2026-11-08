@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describeAgents, loadAgents, type AgentDef } from "./agents.ts";
-import { hcGet, hcKill, hcRm, hcRun, isGone, isWorking, type HcTerminal } from "./hc.ts";
+import { hcGet, hcReap, hcRm, hcRun, isGone, isWorking, type HcTerminal } from "./hc.ts";
 import { readLastAssistantText } from "./session.ts";
 
 const SUBAGENT_TOOL = "subagent";
@@ -23,6 +23,7 @@ type Child = {
 	sessionDir: string;
 	startedMs: number;
 	sawWorking: boolean;
+	autoExit: boolean;
 	finished: boolean;
 	timer?: ReturnType<typeof setInterval>;
 };
@@ -123,7 +124,8 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 		const exit = outcome.exitCode === undefined ? "" : `, exit ${outcome.exitCode}`;
 		const header = `${child.title || child.name} (${child.agent}) — ${outcome.status}${exit}, ${elapsed}`;
 		const body = text?.trim() || "(the child wrote no assistant message)";
-		const content = `${header}\n\n${body}\n\nTerminal: ${child.address}${sessionFile ? `\nSession: ${sessionFile}` : ""}`;
+		const terminalLine = child.autoExit ? `Terminal: ${child.address} (reclaimed)` : `Terminal: ${child.address}`;
+		const content = `${header}\n\n${body}\n\n${terminalLine}${sessionFile ? `\nSession: ${sessionFile}` : ""}`;
 		pi.sendMessage(
 			{
 				customType: "hc_subagent_result",
@@ -144,6 +146,9 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 			{ triggerTurn: true, deliverAs: "steer" },
 		);
 		children.delete(child.id);
+		// A reported child is not worth a live process or a row in the agents panel.
+		// `auto-exit: false` in an agent definition keeps it for a human to inspect.
+		if (child.autoExit) await hcReap(child.address);
 	}
 
 	async function tick(child: Child): Promise<void> {
@@ -227,6 +232,7 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 			sessionDir,
 			startedMs: Date.now(),
 			sawWorking: false,
+			autoExit: agent.autoExit,
 			finished: false,
 		};
 		children.set(child.id, child);
@@ -289,7 +295,7 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 		async execute(_toolCallId, params) {
 			const child = findChild(params.name);
 			if (!child) throw new Error(`No running sub-agent matches "${params.name}".`);
-			await hcKill(child.address);
+			await hcReap(child.address);
 			child.finished = true;
 			if (child.timer) clearInterval(child.timer);
 			children.delete(child.id);

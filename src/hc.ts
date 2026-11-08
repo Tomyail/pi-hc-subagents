@@ -60,6 +60,21 @@ export async function hcRm(address: string): Promise<void> {
 	await hcJson<unknown>(["rm", address, "--json"]);
 }
 
+/**
+ * Stop a child and drop its terminal record. Best effort throughout: a child
+ * that already exited only needs the record removed, and a slow shutdown must
+ * never fail the report the parent is waiting for.
+ */
+export async function hcReap(address: string): Promise<void> {
+	await hcKill(address).catch(() => {});
+	for (let attempt = 0; attempt < 15; attempt += 1) {
+		const terminal = await hcGet(address).catch(() => undefined);
+		if (!terminal || isGone(terminal)) break;
+		await new Promise((resolve) => setTimeout(resolve, 200));
+	}
+	await hcRm(address).catch(() => {});
+}
+
 export function isWorking(terminal: HcTerminal): boolean {
 	return terminal.state === "live" && terminal.status?.state === "working";
 }

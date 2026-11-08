@@ -82,7 +82,10 @@ export function loadAgents(cwd: string): Map<string, AgentDef> {
 				thinking: frontmatter.thinking || undefined,
 				tools: parseList(frontmatter.tools),
 				spawning: frontmatter.spawning !== "false",
-				autoExit: frontmatter["auto-exit"] === "true",
+				// Children are reclaimed by default: a finished helper is not worth a live
+				// process or a row in the agents panel. `auto-exit: false` keeps it around
+				// for a human to inspect.
+				autoExit: frontmatter["auto-exit"] !== "false",
 				source: path,
 			});
 		}

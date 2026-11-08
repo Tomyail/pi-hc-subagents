@@ -66,6 +66,7 @@ numbers. Never edit files.
 | `model` | `provider/id`, passed as `--provider` + `--model` |
 | `thinking` | passed as `--thinking` |
 | `spawning` | `false` (default) keeps the child from launching grandchildren |
+| `auto-exit` | `true` (default) reclaims the child once it reports; `false` leaves it live for inspection |
 
 `spawning: false` is enforced twice: the child gets a system-prompt note, and
 `PI_HC_SUBAGENT_CHILD=1` makes this extension skip registration inside it.
@@ -89,15 +90,19 @@ file once the terminal leaves `working`. It arrives as a separate message that
 starts a new turn — so the parent should not poll, and should keep working or
 stop.
 
-A child does not exit after reporting: `pi "<task>"` runs the turn and stays at
-its prompt, so it stays in the agents panel as a live `done` terminal and can be
-peeked at or sent a follow-up. That also means names are unique among live
-terminals — a repeat launch steps around a taken name (`scout-2`, `scout-3`).
-Reclaiming finished children is not automated yet; use `subagent_kill`.
+A child does not exit after its turn: `pi "<task>"` runs the turn and stays at
+its prompt. So by default the extension **reclaims** it — `hc kill` then `hc rm`
+right after the report is delivered, and the row leaves the agents panel. Set
+`auto-exit: false` in the agent definition when you want to peek at the child or
+send it a follow-up instead.
+
+Names are unique among live terminals, so a repeat launch steps around a taken
+name (`scout-2`, `scout-3`).
 
 ### `subagent_kill`
 
-Stops a running child by name or terminal address. No report follows.
+Stops a running child by name or terminal address, then removes its terminal
+record. No report follows.
 
 ## How completion is detected
 
@@ -112,9 +117,10 @@ no longer `working` after a 90s startup grace (idle, waiting for a human).
 node test/smoke.ts
 ```
 
-Launches a real child, waits for its report, prints it. Run it from a herdr-app
-terminal. It sets `PI_HC_SUBAGENTS_SKIP_RIVAL_CHECK=1` because the rival guard
-would otherwise refuse to load.
+Launches a real child, waits for its report, prints it, then checks the child's
+terminal was reclaimed. Run it from a herdr-app terminal. It sets
+`PI_HC_SUBAGENTS_SKIP_RIVAL_CHECK=1` because the rival guard would otherwise
+refuse to load.
 
 ## Limitations
 
