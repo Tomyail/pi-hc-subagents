@@ -4,12 +4,18 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describeAgents, loadAgents, type AgentDef } from "./agents.ts";
-import { hcGet, hcReap, hcRm, hcRun, isGone, isWorking, type HcTerminal } from "./hc.ts";
+import { hcGet, hcInterrupt, hcRead, hcReap, hcRm, hcRun, hcWaitChildren, isGone, isWorking, type HcTerminal } from "./hc.ts";
 import { readLastAssistantText } from "./session.ts";
 
 const SUBAGENT_TOOL = "subagent";
 const KILL_TOOL = "subagent_kill";
-const POLL_MS = 2000;
+const LIST_TOOL = "subagents_list";
+const READ_TOOL = "subagent_read";
+const INTERRUPT_TOOL = "subagent_interrupt";
+/** `hc wait` checks in after this many seconds; a check-in is not a failure. */
+const WAIT_TIMEOUT_SEC = 180;
+/** hc wakes at once for a child that is alive but not working. Do not spin on it. */
+const WAIT_MIN_GAP_MS = 1000;
 const STARTUP_GRACE_MS = 90_000;
 const CHILD_ENV = "PI_HC_SUBAGENT_CHILD";
 
@@ -25,7 +31,6 @@ type Child = {
 	sawWorking: boolean;
 	autoExit: boolean;
 	finished: boolean;
-	timer?: ReturnType<typeof setInterval>;
 };
 
 type Outcome = { status: string; exitCode?: number };
@@ -50,6 +55,10 @@ function formatElapsed(ms: number): string {
 	const minutes = Math.floor(total / 60);
 	const seconds = total % 60;
 	return minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function sanitizeName(raw: string): string {
@@ -118,7 +127,6 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 	async function finish(child: Child, outcome: Outcome): Promise<void> {
 		if (child.finished) return;
 		child.finished = true;
-		if (child.timer) clearInterval(child.timer);
 		const { text, sessionFile } = readLastAssistantText(child.sessionDir);
 		const elapsed = formatElapsed(Date.now() - child.startedMs);
 		const exit = outcome.exitCode === undefined ? "" : `, exit ${outcome.exitCode}`;
@@ -169,17 +177,44 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 			await finish(child, { status: terminal.reason ?? "exited", exitCode: terminal.exit_code ?? undefined });
 			return;
 		}
-		// Still alive and not working: either it has not started yet, or it is
-		// idle waiting for a human. Give startup a grace window, then report.
-		if (!child.sawWorking && Date.now() - child.startedMs < STARTUP_GRACE_MS) return;
+		// Still alive and not working: either it has not started yet, or it is idle
+		// waiting for a human. A completed turn (turn > 0) proves the task ran, even
+		// if no check happened to land mid-turn; before that, give startup a grace
+		// window, then report.
+		if (!child.sawWorking && !(terminal.turn ?? 0) && Date.now() - child.startedMs < STARTUP_GRACE_MS) return;
 		await finish(child, { status: terminal.status?.state ?? "idle" });
 	}
 
-	function watch(child: Child): void {
-		child.timer = setInterval(() => {
-			void tick(child);
-		}, POLL_MS);
-		child.timer.unref?.();
+	let watching = false;
+
+	/**
+	 * One watcher for every child: `hc wait` reports news about any of them, so a
+	 * loop per child would wake them all at once. A timeout is a check-in, not a
+	 * failure, and is never reported to the parent.
+	 */
+	async function watch(): Promise<void> {
+		if (watching) return;
+		watching = true;
+		try {
+			while (children.size) {
+				try {
+					await hcWaitChildren(WAIT_TIMEOUT_SEC);
+				} catch {
+					// hc is unreachable: keep the loop alive without hammering it.
+					await sleep(5000);
+					continue;
+				}
+				// A timeout is a check-in, not news, and is never reported. Look at every
+				// child anyway: one may have finished before this wait even started.
+				const before = children.size;
+				for (const child of [...children.values()]) {
+					if (!child.finished) await tick(child);
+				}
+				if (children.size === before) await sleep(WAIT_MIN_GAP_MS);
+			}
+		} finally {
+			watching = false;
+		}
 	}
 
 	async function launch(
@@ -236,7 +271,7 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 			finished: false,
 		};
 		children.set(child.id, child);
-		watch(child);
+		void watch();
 		return child;
 	}
 
@@ -297,11 +332,100 @@ export default function piHcSubagents(pi: ExtensionAPI) {
 			if (!child) throw new Error(`No running sub-agent matches "${params.name}".`);
 			await hcReap(child.address);
 			child.finished = true;
-			if (child.timer) clearInterval(child.timer);
 			children.delete(child.id);
 			return {
 				content: [{ type: "text" as const, text: `Stopped ${child.name} (${child.address}).` }],
 				details: { id: child.id, terminal: child.address },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: LIST_TOOL,
+		label: "List subagents",
+		description:
+			"Show the sub-agents this session started, with the state herdr-core reports for each: state, status, how long it has held that status, and its turn count. " +
+			"Use it to check whether a helper is still working, or to spot one that has been working for a long time.",
+		promptSnippet: "Check on running helpers: state, status, time held in that status, turns. Cheap and immediate.",
+		parameters: Type.Object({}),
+		async execute() {
+			const now = Date.now();
+			const lines: string[] = [];
+			const details: unknown[] = [];
+			for (const child of children.values()) {
+				const terminal = await hcGet(child.address).catch(() => undefined);
+				const state = terminal?.state ?? "lost";
+				const status = terminal?.status?.state ?? "-";
+				// `status_ms` is when the status was set, so this is how long it has held it.
+				// It does not move while a turn runs, so a long `working` here means either
+				// a long turn or a stuck one; only reading the screen can tell them apart.
+				const held = terminal?.status_ms ? now - terminal.status_ms : undefined;
+				lines.push(
+					`${child.name} (${child.agent}) ${child.address} — ${state}/${status}` +
+						(held === undefined ? "" : ` for ${formatElapsed(held)}`) +
+						`, up ${formatElapsed(now - child.startedMs)}, turn ${terminal?.turn ?? 0}` +
+						(child.title ? ` — ${child.title}` : ""),
+				);
+				details.push({
+					id: child.id,
+					name: child.name,
+					agent: child.agent,
+					terminal: child.address,
+					state,
+					status,
+					statusMs: terminal?.status_ms ?? null,
+					turn: terminal?.turn ?? 0,
+					elapsedMs: now - child.startedMs,
+				});
+			}
+			if (!lines.length) {
+				return { content: [{ type: "text" as const, text: "No sub-agents are running." }], details: { children: [] } };
+			}
+			return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { children: details } };
+		},
+	});
+
+	pi.registerTool({
+		name: READ_TOOL,
+		label: "Read subagent screen",
+		description:
+			"Print a sub-agent's terminal screen plus some history above it. Use it when a report is missing or unclear, or when a helper has been working a long time and you need to see where it is.",
+		promptSnippet: "See what a helper's terminal shows right now: screen plus history.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Sub-agent name or terminal address" }),
+			lines: Type.Optional(Type.Number({ description: "Lines of history above the screen (default 40). While the child is working, hc returns only its screen." })),
+		}),
+		async execute(_toolCallId, params) {
+			const child = findChild(params.name);
+			if (!child) throw new Error(`No running sub-agent matches "${params.name}".`);
+			const screen = (await hcRead(child.address, params.lines ?? 40)).trim();
+			return {
+				content: [{ type: "text" as const, text: `# ${child.name} (${child.address})\n\n${screen || "(the terminal shows nothing)"}` }],
+				details: { id: child.id, terminal: child.address },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: INTERRUPT_TOOL,
+		label: "Interrupt subagent",
+		description:
+			"Press the stop key in a sub-agent's terminal: ends its current turn but does not kill the process. " +
+			"Use it when a helper has been working too long. Unlike subagent_kill, a report still follows with whatever it had written.",
+		promptSnippet: "Stop a helper's current turn without killing the terminal.",
+		parameters: Type.Object({
+			name: Type.String({ description: "Sub-agent name or terminal address" }),
+		}),
+		async execute(_toolCallId, params) {
+			const child = findChild(params.name);
+			if (!child) throw new Error(`No running sub-agent matches "${params.name}".`);
+			const result = await hcInterrupt(child.address).catch((error: unknown) => ({ outcome: `failed: ${String(error)}` }));
+			const outcome = result.outcome ?? "unknown";
+			return {
+				content: [
+					{ type: "text" as const, text: `Interrupted ${child.name} (${child.address}): ${outcome}. A report follows with whatever it had written.` },
+				],
+				details: { id: child.id, terminal: child.address, outcome },
 			};
 		},
 	});

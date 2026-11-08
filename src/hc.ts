@@ -7,10 +7,23 @@ export type HcTerminal = {
 	parent: string | null;
 	state: string;
 	status: { state: string; app?: string; msg?: string } | null;
+	/** When `status` last changed. It does not move while a turn runs. */
+	status_ms?: number | null;
+	pid?: number | null;
+	created_ms?: number;
+	finished_ms?: number | null;
+	title?: string;
 	exit_code: number | null;
 	reason: string | null;
 	turn?: number;
 	cwd?: string;
+};
+
+/** What `hc wait --children any` reports back. */
+export type HcWait = {
+	reason: string;
+	ended: boolean;
+	children: { terminal: string; ended: boolean; reason: string; exit_code: number | null }[];
 };
 
 type HcResult = { stdout: string; stderr: string; code: number };
@@ -54,6 +67,29 @@ export async function hcGet(address: string): Promise<HcTerminal> {
 
 export async function hcKill(address: string): Promise<void> {
 	await hcJson<unknown>(["kill", address, "--json"]);
+}
+
+/**
+ * Wait until any child of this terminal has news, or `timeoutSec` passes.
+ * `reason: "timeout"` is a check-in, not a failure: wait again.
+ */
+export async function hcWaitChildren(timeoutSec: number): Promise<HcWait> {
+	return hcJson<HcWait>(
+		["wait", "--children", "any", "--timeout", String(timeoutSec), "--json"],
+		(timeoutSec + 20) * 1000,
+	);
+}
+
+/** A terminal's screen plus `lines` of history above it. Plain text, not JSON. */
+export async function hcRead(address: string, lines = 0): Promise<string> {
+	const { stdout, stderr, code } = await hc(["read", address, "--lines", String(lines)]);
+	if (code !== 0) throw new Error(`hc read ${address} failed: ${(stderr || stdout).trim() || `exit ${code}`}`);
+	return stdout;
+}
+
+/** Press the stop key: ends the current turn, not the process. */
+export async function hcInterrupt(address: string): Promise<{ key?: string; outcome?: string }> {
+	return hcJson<{ key?: string; outcome?: string }>(["interrupt", address, "--json"]);
 }
 
 export async function hcRm(address: string): Promise<void> {

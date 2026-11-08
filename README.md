@@ -99,6 +99,27 @@ send it a follow-up instead.
 Names are unique among live terminals, so a repeat launch steps around a taken
 name (`scout-2`, `scout-3`).
 
+### `subagents_list`
+
+Every child this session started, with what herdr-core reports for it: state,
+status, how long it has held that status, uptime, turn count. Cheap and
+immediate — use it instead of waiting to find out whether a helper is still
+working.
+
+A long `working` means either a long turn or a stuck one. `status_ms` does not
+move while a turn runs, so this number cannot tell them apart; read the screen
+to decide.
+
+### `subagent_read`
+
+A child's terminal screen plus history above it. While the child is working,
+hc returns only its screen (there is no history yet).
+
+### `subagent_interrupt`
+
+Presses the stop key: ends the current turn, does not kill the process. A report
+still follows with whatever the child had written — often nothing.
+
 ### `subagent_kill`
 
 Stops a running child by name or terminal address, then removes its terminal
@@ -107,9 +128,15 @@ record. No report follows.
 ## How completion is detected
 
 `subagent_done` is only registered for auto-exit children, so this extension
-does not rely on it. Instead it polls `hc get <address> --json` every 2s and
-treats the child as finished when the terminal is gone, or when it is alive but
-no longer `working` after a 90s startup grace (idle, waiting for a human).
+does not rely on it. One watcher waits on `hc wait --children any --timeout 180`
+for every child at once, then checks each with `hc get <address> --json`. A
+child is finished when its terminal is gone, or when it is alive but no longer
+`working` — and either a turn has completed (`turn > 0`), or the 90s startup
+grace has passed.
+
+A wait timeout is a check-in, not news: it is never reported to the parent, but
+the children are still checked, because one may have finished before the wait
+started.
 
 ## Testing
 
@@ -125,5 +152,5 @@ refuse to load.
 ## Limitations
 
 - One level deep: a child cannot spawn grandchildren.
-- No live widget; progress is visible in herdr-app's agents panel.
+- No live widget; progress is visible in herdr-app's agents panel, or read on demand with `subagents_list` / `subagent_read`.
 - Reports are the child's final assistant message — no structured result schema.
