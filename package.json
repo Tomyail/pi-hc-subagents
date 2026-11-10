@@ -9,17 +9,21 @@
   "author": "Tomyail",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Tomyail/pi-hc-subagents"
+    "url": "git+https://github.com/Tomyail/pi-hc-subagents.git"
   },
   "type": "module",
+  "files": [
+    "src",
+    "README.md"
+  ],
   "pi": {
     "extensions": [
       "./src/index.ts"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "~1.5.0",
-    "typebox": "~1.3.0"
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "~1.5.0",

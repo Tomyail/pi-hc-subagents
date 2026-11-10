@@ -35,7 +35,8 @@ herdr-core and the agents panel renders it as a tree.
 ## Install
 
 ```bash
-pi install git:github.com/Tomyail/pi-hc-subagents
+pi install npm:pi-hc-subagents   # released versions
+pi install git:github.com/Tomyail/pi-hc-subagents   # tracks main
 ```
 
 ## Agents
